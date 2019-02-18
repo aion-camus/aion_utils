@@ -66,7 +66,7 @@ pub enum AbiToken<'a> {
     STRING(String),
 }
 
-trait AVMEncoder {
+pub trait AVMEncoder {
     fn encode(&self) -> Vec<u8>;
 }
 
