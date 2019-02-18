@@ -7,27 +7,44 @@ pub trait ToBytes {
     fn to_bytes(&self) -> Vec<u8>;
 }
 
+pub trait ToBe<T> {
+    fn to_be(&self) -> T;
+}
+
+impl ToBe<u32> for f32 {
+    fn to_be(&self) -> u32 {
+        let data = unsafe {mem::transmute::<f32, u32>(*self)};
+        data.to_be()
+    }
+}
+
+impl ToBe<u64> for f64 {
+    fn to_be(&self) -> u64 {
+        let data = unsafe {mem::transmute::<f64, u64>(*self)};
+        data.to_be()
+    }
+}
+
 macro_rules! format_as_bytes {
-    ($type_name: ident, $endian: expr, $len: expr) => {
+    ($type_name: ident, $len: expr) => {
         impl ToBytes for $type_name {
             fn to_bytes(&self) -> Vec<u8> {
-                let bytes: [u8; $len] = match $endian {
-                    0 => unsafe {mem::transmute(self.to_be())},
-                    1 => unsafe {mem::transmute(self.to_le())},
-                    _ => [0; $len]
-                };
+                let bytes: [u8; $len] = unsafe {mem::transmute(self.to_be())};
+
                 bytes.to_vec()
             }
         }
     };
 }
 
-format_as_bytes!(u16, 0, 2);
-format_as_bytes!(i16, 0, 2);
-format_as_bytes!(u32, 0, 4);
-format_as_bytes!(i32, 0, 4);
-format_as_bytes!(u64, 0, 8);
-format_as_bytes!(i64, 0, 8);
+format_as_bytes!(u16, 2);
+format_as_bytes!(i16, 2);
+format_as_bytes!(u32, 4);
+format_as_bytes!(i32, 4);
+format_as_bytes!(u64, 8);
+format_as_bytes!(i64, 8);
+format_as_bytes!(f32, 4);
+format_as_bytes!(f64, 8);
 
 enum AbiToken<'a> {
     UCHAR(u8),
@@ -87,66 +104,67 @@ impl<'a> AVMEncoder for AbiToken<'a> {
             },
             AbiToken::FLOAT(v) => {
                 res.push(0x07);
-                //TODO: float variable
-                panic!("unsupported for float");
+                res.append(&mut v.to_bytes())
             },
             AbiToken::DOUBLE(v) => {
                 res.push(0x08);
-                //TODO: double variable
-                panic!("unsupported for double");
+                res.append(&mut v.to_bytes())
             },
             AbiToken::AUCHAR(v) => {
                 res.push(0x11);
-                v.iter().map(|v| {
-                    res.push(*v)
-                });
+                for item in v {
+                    res.push(*item)
+                }
             },
             AbiToken::ABOOL(v) => {
                 res.push(0x12);
-                v.iter().map(|v| {
-                    if *v {
+                for item in v {
+                    if *item {
                         res.push(0x01)
                     } else {
                         res.push(0x02)
                     }
-                });
+                }
             },
             AbiToken::AINT8(v) => {
                 res.push(0x13);
-                v.iter().map(|v| {
-                    res.push(*v as u8)
-                });
+                for item in v {
+                    res.push(*item as u8)
+                }
             },
             AbiToken::AINT16(v) => {
                 res.push(0x14);
-                v.iter().map(|v| {
-                    res.append(&mut v.to_bytes())
-                });
+                for item in v {
+                    res.append(&mut item.to_bytes());
+                }
             },
             AbiToken::AINT32(v) => {
                 res.push(0x15);
-                v.iter().map(|v| {
-                    res.append(&mut v.to_bytes())
-                });
+                for item in v {
+                    res.append(&mut item.to_bytes());
+                }
             },
             AbiToken::AINT64(v) => {
                 res.push(0x16);
-                v.iter().map(|v| {
-                    res.append(&mut v.to_bytes())
-                });
+                for item in v {
+                    res.append(&mut item.to_bytes());
+                }
             },
             AbiToken::AFLOAT(v) => {
                 res.push(0x17);
-                //TODO: float array
-                panic!("unsupported for float array");
+                for item in v {
+                    res.append(&mut item.to_bytes());
+                }
             },
             AbiToken::ADOUBLE(v) => {
                 res.push(0x18);
-                panic!("unsupported for double array");
+                for item in v {
+                    res.append(&mut item.to_bytes())
+                }
             },
             AbiToken::STRING(ref v) => {
                 res.push(0x21);
-                res.append(&mut (v.len() as i32).to_bytes());
+                res.append(&mut (v.len() as i16).to_bytes());
                 res.append(&mut v.clone().into_bytes());
             },
         }
@@ -161,8 +179,24 @@ mod tests {
 
     #[test]
     fn encode() {
-        let token = AbiToken::STRING("hello".to_string());
+        let mut method = AbiToken::STRING("hello".to_string());
+        let mut data_0 = AbiToken::UCHAR(0x01u8);
 
-        assert_eq!(token.encode(), vec![33,0,0,0,5,104,101,108,108,111]);
+        assert_eq!(method.encode(), vec![0x21, 0x00, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f]);
+        assert_eq!(data_0.encode(), vec![0x01, 0x01]);
+        data_0 = AbiToken::UCHAR(0xff);
+        assert_eq!(data_0.encode(), vec![0x01, 0xff]);
+        data_0 = AbiToken::INT32(123);
+        assert_eq!(data_0.encode(), vec![0x05, 0x00, 0x00, 0x00, 0x7b]);
+        method = AbiToken::STRING("method".to_string());
+        assert_eq!(method.encode(), vec![0x21, 0x00, 0x06, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64]);
+        data_0 = AbiToken::FLOAT(1.0);
+        assert_eq!(data_0.encode(), vec![0x07, 0x3f, 0x80, 0x00, 0x00]);
+        data_0 = AbiToken::AFLOAT(&[1.0, 2.0]);
+        assert_eq!(data_0.encode(), vec![23, 63, 128, 0, 0, 64, 0, 0, 0]);
+        data_0 = AbiToken::DOUBLE(1.0);
+        assert_eq!(data_0.encode(), vec![0x08, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        data_0 = AbiToken::ADOUBLE(&[1.0, 2.0]);
+        assert_eq!(data_0.encode(), vec![24, 63, 240, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0]);
     }
 }
