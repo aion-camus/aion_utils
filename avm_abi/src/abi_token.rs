@@ -4,7 +4,7 @@
 use std::mem;
 
 pub trait ToBytes {
-    fn to_bytes(&self) -> Vec<u8>;
+    fn to_vm_bytes(&self) -> Vec<u8>;
 }
 
 pub trait ToBe<T> {
@@ -28,7 +28,7 @@ impl ToBe<u64> for f64 {
 macro_rules! format_as_bytes {
     ($type_name: ident, $len: expr) => {
         impl ToBytes for $type_name {
-            fn to_bytes(&self) -> Vec<u8> {
+            fn to_vm_bytes(&self) -> Vec<u8> {
                 let bytes: [u8; $len] = unsafe {mem::transmute(self.to_be())};
 
                 bytes.to_vec()
@@ -46,7 +46,7 @@ format_as_bytes!(i64, 8);
 format_as_bytes!(f32, 4);
 format_as_bytes!(f64, 8);
 
-enum AbiToken<'a> {
+pub enum AbiToken<'a> {
     UCHAR(u8),
     BOOL(bool),
     INT8(i8),
@@ -92,23 +92,23 @@ impl<'a> AVMEncoder for AbiToken<'a> {
             },
             AbiToken::INT16(v) => {
                 res.push(0x04);
-                res.append(&mut v.to_bytes())
+                res.append(&mut v.to_vm_bytes())
             },
             AbiToken::INT32(v) => {
                 res.push(0x05);
-                res.append(&mut v.to_bytes())
+                res.append(&mut v.to_vm_bytes())
             },
             AbiToken::INT64(v) => {
                 res.push(0x06);
-                res.append(&mut v.to_bytes())
+                res.append(&mut v.to_vm_bytes())
             },
             AbiToken::FLOAT(v) => {
                 res.push(0x07);
-                res.append(&mut v.to_bytes())
+                res.append(&mut v.to_vm_bytes())
             },
             AbiToken::DOUBLE(v) => {
                 res.push(0x08);
-                res.append(&mut v.to_bytes())
+                res.append(&mut v.to_vm_bytes())
             },
             AbiToken::AUCHAR(v) => {
                 res.push(0x11);
@@ -135,36 +135,36 @@ impl<'a> AVMEncoder for AbiToken<'a> {
             AbiToken::AINT16(v) => {
                 res.push(0x14);
                 for item in v {
-                    res.append(&mut item.to_bytes());
+                    res.append(&mut item.to_vm_bytes());
                 }
             },
             AbiToken::AINT32(v) => {
                 res.push(0x15);
                 for item in v {
-                    res.append(&mut item.to_bytes());
+                    res.append(&mut item.to_vm_bytes());
                 }
             },
             AbiToken::AINT64(v) => {
                 res.push(0x16);
                 for item in v {
-                    res.append(&mut item.to_bytes());
+                    res.append(&mut item.to_vm_bytes());
                 }
             },
             AbiToken::AFLOAT(v) => {
                 res.push(0x17);
                 for item in v {
-                    res.append(&mut item.to_bytes());
+                    res.append(&mut item.to_vm_bytes());
                 }
             },
             AbiToken::ADOUBLE(v) => {
                 res.push(0x18);
                 for item in v {
-                    res.append(&mut item.to_bytes())
+                    res.append(&mut item.to_vm_bytes())
                 }
             },
             AbiToken::STRING(ref v) => {
                 res.push(0x21);
-                res.append(&mut (v.len() as i16).to_bytes());
+                res.append(&mut (v.len() as i16).to_vm_bytes());
                 res.append(&mut v.clone().into_bytes());
             },
         }
