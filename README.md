@@ -1,7 +1,8 @@
-# avm_utils
+# aion_utils
 
-utilities for avm in rust kernel
+utilities for Aion Rust Kernel
 
 ## Content
 
 - avm_abi
+- terminal
