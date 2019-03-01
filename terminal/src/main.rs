@@ -2,7 +2,12 @@ use std::io::{self, Write};
 use std::thread;
 use std::sync::mpsc::{channel, Sender};
 
+mod parser;
+
+use parser::AppOptions;
+
 fn start(tx: Sender<i32>, info: String) {
+    let apps = AppOptions::new("avm");
     match thread::Builder::new().name("cmd".to_string()).spawn(move || {
         loop {
             print!("{}", info);
@@ -21,6 +26,7 @@ fn start(tx: Sender<i32>, info: String) {
                         println!("{}", input);
                     },
                 }
+                parser::parse(&input, &apps);
             }
             Err(error) => println!("error: {}", error),
             }
