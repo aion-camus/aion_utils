@@ -1,0 +1,15 @@
+[package]
+name = "accounts"
+version = "0.1.0"
+authors = ["Camus Qiu <camus@aion.network>"]
+
+[dependencies]
+aion-types = {path="../aion-types"}
+acore-bytes = {path="../bytes"}
+lru-cache = "0.1"
+log = "0.3"
+blake2b = { path = "../blake2b" }
+rlp = { path = "../rlp" }
+rlp_derive = { path = "../rlp_derive" }
+db = { path = "../db/core" }
+patricia-trie = { path = "../patricia_trie" }
