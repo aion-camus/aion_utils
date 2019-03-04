@@ -5,6 +5,7 @@ pub enum ParseError {
     UnexpectedParams,
 }
 
+#[derive(Clone)]
 struct OptionRule<'a> {
     name: &'a str,
     short: &'a str,
@@ -66,25 +67,31 @@ impl<'a> OptionRule<'a> {
 }
 
 pub struct AppOptions<'a> {
-    args: HashMap<&'a str, Vec<OptionRule<'a>>>
+    name: &'a str,
+    args: Vec<OptionRule<'a>>
 }
 
 impl<'a> AppOptions<'a> {
     pub fn new(app_name: &'a str) -> Self {
-        let mut map = HashMap::new();
-        map.insert(app_name, Vec::new());
-
         AppOptions {
-            args: map
+            name: app_name,
+            args: Vec::new(),
         }
     }
 
-    fn arg(&mut self, rule: OptionRule) -> Self {
-        
+    fn arg(&mut self, rule: OptionRule<'a>) -> Self {
+        self.args.push(rule);
+        AppOptions {
+            name: self.name.clone(),
+            args: self.args.clone(),
+        }
     }
 
-    fn get_app(&self, name: &'a str) -> Option<&Vec<OptionRule>> {
-        return self.args.get(name);
+    fn match_app(&self, name: &'a str) -> Option<Vec<OptionRule<'a>>> {
+        match self.name {
+            name => Some(self.args.clone()),
+            _ => None,
+        }
     }
 }
 
@@ -94,7 +101,7 @@ pub fn parse(input: &str, opts: &AppOptions) -> Result<(), ParseError> {
 
     println!("cmds = {:?}", cmds);
 
-    match opts.get_app(cmds[0]) {
+    match opts.match_app(cmds[0]) {
         Some(v) => {
             Ok(())
         },
