@@ -13,3 +13,4 @@ rlp = { path = "../rlp" }
 rlp_derive = { path = "../rlp_derive" }
 db = { path = "../db/core" }
 patricia-trie = { path = "../patricia_trie" }
+parking_lot = "0.5"

@@ -6,7 +6,7 @@ use kvdb::{HashStore};
 use trie;
 use trie::TrieFactory;
 
-pub trait Account {
+pub trait Account: Sync + Send {
 
     fn from_rlp(rlp: &[u8]) -> Self;
 
