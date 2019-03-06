@@ -104,3 +104,7 @@ pub trait AccountStorage<T, U> {
     fn cached_storage_at(&self, key: &T) -> Option<U>;
     fn set_storage(&mut self, key: T, value: U);
 }
+
+pub trait AccountOps {
+    fn overwrite_with(&mut self, pther: Self);
+}

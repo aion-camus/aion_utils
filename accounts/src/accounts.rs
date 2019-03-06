@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use aion_types::{H128, U128, H256, U256, Address};
 use bytes::{Bytes, ToPretty};
-use traits::{Account, AccountStorage};
+use traits::{Account, AccountStorage, AccountOps};
 use blake2b::{BLAKE2B_EMPTY, BLAKE2B_NULL_RLP, blake2b};
 use rlp::*;
 use trie;
@@ -202,8 +202,10 @@ impl FVMAccount {
         account.storage_cache_dword = self.storage_cache_dword.clone();
         account
     }
+}
 
-    /// Replace self with the data from other account merging storage cache.
+impl AccountOps for FVMAccount {
+     /// Replace self with the data from other account merging storage cache.
     /// Basic account data and all modifications are overwritten
     /// with new values.
     fn overwrite_with(&mut self, other: Self) {
@@ -282,6 +284,34 @@ impl From<BasicAccount> for AVMAccount {
             code_filth: Filth::Clean,
             address_hash: Arc::new(Mutex::new(Cell::new(None))),
         }
+    }
+}
+
+impl AccountOps for AVMAccount {
+     /// Replace self with the data from other account merging storage cache.
+    /// Basic account data and all modifications are overwritten
+    /// with new values.
+    fn overwrite_with(&mut self, other: Self) {
+        self.balance = other.balance;
+        self.nonce = other.nonce;
+        self.storage_root = other.storage_root;
+        self.code_hash = other.code_hash;
+        self.code_filth = other.code_filth;
+        self.code_cache = other.code_cache;
+        self.code_size = other.code_size;
+        self.address_hash = other.address_hash;
+
+        let mut storage = self.storage_cache.lock();
+        let storage = &mut *storage;
+        let mut cache = storage.cache.borrow_mut();
+
+        let other_storage = other.storage_cache.lock();
+        let other_cache = other_storage.cache.clone();
+
+        for (k, v) in other_cache.into_inner() {
+            cache.insert(k.clone(), v.clone()); //TODO: cloning should not be required here
+        }
+        self.storage_changes = other.storage_changes;
     }
 }
 
