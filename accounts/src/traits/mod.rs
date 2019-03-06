@@ -3,10 +3,8 @@ use std::sync::Arc;
 use aion_types::{Address, H256, U256};
 use bytes::Bytes;
 use kvdb::{HashStore};
-use trie;
-use trie::TrieFactory;
 
-pub trait Account {
+pub trait CommonAccount: Sync + Send {
 
     fn from_rlp(rlp: &[u8]) -> Self;
 
@@ -97,10 +95,4 @@ pub trait Account {
     // /// Basic account data and all modifications are overwritten
     // /// with new values.
     // fn overwrite_wigh(&mut self, pther: Self);
-}
-
-pub trait AccountStorage<T, U> {
-    fn storage_at(&self, db: &HashStore, key: &T) -> trie::Result<U>;
-    fn cached_storage_at(&self, key: &T) -> Option<U>;
-    fn set_storage(&mut self, key: T, value: U);
 }
