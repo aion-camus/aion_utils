@@ -2,6 +2,8 @@ use lru_cache::LruCache;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::hash::Hash;
+use std::cmp::Eq;
 
 use aion_types::{H128, U128, H256, U256, Address};
 use bytes::{Bytes, ToPretty};
@@ -40,7 +42,7 @@ pub enum Filth {
 
 #[derive(Debug)]
 struct StorageCache<T, U>
-where T: std::hash::Hash + std::cmp::Eq
+where T: Hash + Eq
 {
     cache: RefCell<LruCache<T, U>>,
 }

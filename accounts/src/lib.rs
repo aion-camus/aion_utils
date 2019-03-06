@@ -18,4 +18,4 @@ mod accounts;
 mod traits;
 mod account_db;
 
-pub use accounts::{FVMAccount, AVMAccount};
+pub use accounts::{Account, FVMAccount, AVMAccount};
