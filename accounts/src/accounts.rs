@@ -2,17 +2,15 @@ use lru_cache::LruCache;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::hash::Hash;
-use std::cmp::Eq;
 
 use aion_types::{H128, U128, H256, U256, Address};
 use bytes::{Bytes, ToPretty};
-use traits::{Account, AccountStorage, AccountOps};
+use generic::{Account, Filth};
+use traits::CommonAccount;
 use blake2b::{BLAKE2B_EMPTY, BLAKE2B_NULL_RLP, blake2b};
 use rlp::*;
 use trie;
 use trie::{Trie, SecTrieDB, TrieFactory};
-use parking_lot::Mutex;
 
 use kvdb::{DBValue, HashStore};
 
@@ -31,54 +29,36 @@ pub struct BasicAccount {
 
 const STORAGE_CACHE_ITEMS: usize = 8192;
 
-/// Boolean type for clean/dirty status.
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum Filth {
-    /// Data has not been changed.
-    Clean,
-    /// Data has been changed.
-    Dirty,
+type FVMCache = (RefCell<LruCache<H128, H128>>, RefCell<LruCache<H128, H256>>);
+type FVMStorageChange = (HashMap<H128, H128>, HashMap<H128, H256>);
+pub type FVMAccount = Account<FVMCache, FVMStorageChange>;
+
+impl FVMAccount {
+    fn empty_storage_cache() -> FVMCache {
+        (RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)), RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)))
+    }
+
+    fn empty_storage_change() -> FVMStorageChange {
+        (HashMap::new(), HashMap::new())
+    }
 }
 
-#[derive(Debug)]
-struct StorageCache<T, U>
-where T: Hash + Eq
-{
-    cache: RefCell<LruCache<T, U>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct FVMAccount {
-    // Balance of the account.
-    balance: U256,
-    // Nonce of the account.
-    nonce: U256,
-    // Trie-backed storage.
-    storage_root: H256,
-    // LRU Cache of the trie-backed storage.
-    // This is limited to `STORAGE_CACHE_ITEMS` recent queries
-    storage_cache: Arc<Mutex<StorageCache<H128, H128>>>,
-    // Modified storage. Accumulates changes to storage made in `set_storage`
-    // Takes precedence over `storage_cache`.
-    storage_changes: HashMap<H128, H128>,
-
-    storage_cache_dword: Arc<Mutex<StorageCache<H128, H256>>>,
-
-    storage_changes_dword: HashMap<H128, H256>,
-
-    // Code hash of the account.
-    code_hash: H256,
-    // Size of the accoun code.
-    code_size: Option<usize>,
-    // Code cache of the account.
-    code_cache: Arc<Bytes>,
-    // Account code new or has been modified.
-    code_filth: Filth,
-    // Cached address hash.
-    address_hash: Arc<Mutex<Cell<Option<H256>>>>,
-    // empty_flag: for Aion Java Kernel Only
-    empty_but_commit: bool,
-    // account type: 0x00 = normal; 0x01 = EVM; 0x02 = AVM
+impl From<BasicAccount> for FVMAccount {
+    fn from(basic: BasicAccount) -> Self {
+        Account {
+            balance: basic.balance,
+            nonce: basic.nonce,
+            storage_root: basic.storage_root,
+            storage_cache: Self::empty_storage_cache(),
+            storage_changes: (HashMap::new(), HashMap::new()),
+            code_hash: basic.code_hash,
+            code_size: None,
+            code_cache: Arc::new(vec![]),
+            code_filth: Filth::Clean,
+            address_hash: Cell::new(None),
+            empty_but_commit: false,
+        }
+    }
 }
 
 impl FVMAccount {
@@ -87,19 +67,13 @@ impl FVMAccount {
             balance: balance,
             nonce: nonce,
             storage_root: BLAKE2B_NULL_RLP,
-            storage_cache: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes: HashMap::new(),
-            storage_cache_dword: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes_dword: HashMap::new(),
+            storage_cache: Self::empty_storage_cache(),
+            storage_changes: Self::empty_storage_change(),
             code_hash: BLAKE2B_EMPTY,
             code_cache: Arc::new(vec![]),
             code_size: None,
             code_filth: Filth::Clean,
-            address_hash: Arc::new(Mutex::new(Cell::new(None))),
+            address_hash: Cell::new(None),
             empty_but_commit: false,
         }
     }
@@ -109,25 +83,19 @@ impl FVMAccount {
             balance: balance,
             nonce: nonce,
             storage_root: BLAKE2B_NULL_RLP,
-            storage_cache: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes: HashMap::new(),
-            storage_cache_dword: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes_dword: HashMap::new(),
+            storage_cache: Self::empty_storage_cache(),
+            storage_changes: Self::empty_storage_change(),
             code_hash: BLAKE2B_EMPTY,
             code_cache: Arc::new(vec![]),
             code_size: Some(0),
             code_filth: Filth::Clean,
-            address_hash: Arc::new(Mutex::new(Cell::new(None))),
+            address_hash: Cell::new(None),
             empty_but_commit: false,
         }
     }
 
     fn storage_is_clean(&self) -> bool {
-        self.storage_changes.is_empty() && self.storage_changes_dword.is_empty()
+        self.storage_changes.0.is_empty() && self.storage_changes.1.is_empty()
     }
 
     /// Commit the `storage_changes` to the backing DB and update `storage_root`.
@@ -138,7 +106,7 @@ impl FVMAccount {
     ) -> trie::Result<()>
     {
         let mut t = trie_factory.from_existing(db, &mut self.storage_root)?;
-        for (k, v) in self.storage_changes.drain() {
+        for (k, v) in self.storage_changes.0.drain() {
             // cast key and value to trait type,
             // so we can call overloaded `to_bytes` method
             match v.is_zero() {
@@ -146,13 +114,10 @@ impl FVMAccount {
                 false => t.insert(&k, &encode(&U128::from(&*v)))?,
             };
 
-            let mut storage = self.storage_cache.lock();
-            let storage = &mut *storage;
-
-            storage.cache.borrow_mut().insert(k, v);
+            self.storage_cache.0.borrow_mut().insert(k, v);
         }
 
-        for (k, v) in self.storage_changes_dword.drain() {
+        for (k, v) in self.storage_changes.1.drain() {
             // cast key and value to trait type,
             // so we can call overloaded `to_bytes` method
             match v.is_zero() {
@@ -160,18 +125,15 @@ impl FVMAccount {
                 false => t.insert(&k, &encode(&v))?,
             };
 
-            let mut storage = self.storage_cache_dword.lock();
-            let storage = &mut *storage;
-
-            storage.cache.borrow_mut().insert(k, v);
+            self.storage_cache.1.borrow_mut().insert(k, v);
         }
 
         Ok(())
     }
 
     fn discard_storage_changes(&mut self) {
-        self.storage_changes.clear();
-        self.storage_changes_dword.clear();
+        self.storage_changes.0.clear();
+        self.storage_changes.1.clear();
     }
 
     /// Clone basic account data
@@ -180,14 +142,8 @@ impl FVMAccount {
             balance: self.balance.clone(),
             nonce: self.nonce.clone(),
             storage_root: self.storage_root.clone(),
-            storage_cache: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes: HashMap::new(),
-            storage_cache_dword: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes_dword: HashMap::new(),
+            storage_cache: Self::empty_storage_cache(),
+            storage_changes: Self::empty_storage_change(),
             code_hash: self.code_hash.clone(),
             code_size: self.code_size.clone(),
             code_cache: self.code_cache.clone(),
@@ -201,12 +157,37 @@ impl FVMAccount {
     fn clone_all(&self) -> Self {
         let mut account = self.clone_dirty();
         account.storage_cache = self.storage_cache.clone();
-        account.storage_cache_dword = self.storage_cache_dword.clone();
         account
+    }
+
+    /// Replace self with the data from other account merging storage cache.
+    /// Basic account data and all modifications are overwritten
+    /// with new values.
+    fn overwrite_with(&mut self, other: Self) {
+        self.balance = other.balance;
+        self.nonce = other.nonce;
+        self.storage_root = other.storage_root;
+        self.code_hash = other.code_hash;
+        self.code_filth = other.code_filth;
+        self.code_cache = other.code_cache;
+        self.code_size = other.code_size;
+        self.address_hash = other.address_hash;
+
+        let mut cache = self.storage_cache.0.borrow_mut();
+        for (k, v) in other.storage_cache.0.into_inner() {
+            cache.insert(k.clone(), v.clone()); //TODO: cloning should not be required here
+        }
+
+        let mut cache = self.storage_cache.1.borrow_mut();
+        for (k, v) in other.storage_cache.1.into_inner() {
+            cache.insert(k.clone(), v.clone()); //TODO: cloning should not be required here
+        }
+
+        self.storage_changes = other.storage_changes;
     }
 }
 
-impl AccountOps for FVMAccount {
+impl AVMAccount {
      /// Replace self with the data from other account merging storage cache.
     /// Basic account data and all modifications are overwritten
     /// with new values.
@@ -220,145 +201,58 @@ impl AccountOps for FVMAccount {
         self.code_size = other.code_size;
         self.address_hash = other.address_hash;
 
-        let mut storage = self.storage_cache.lock();
-        let storage = &mut *storage;
-        let mut cache = storage.cache.borrow_mut();
-
-        let other_storage = other.storage_cache.lock();
-        let other_cache = other_storage.cache.clone();
-
-        for (k, v) in other_cache.into_inner() {
+        let mut cache = self.storage_cache.borrow_mut();
+        for (k, v) in other.storage_cache.into_inner() {
             cache.insert(k.clone(), v.clone()); //TODO: cloning should not be required here
         }
         self.storage_changes = other.storage_changes;
-
-        let mut storage = self.storage_cache_dword.lock();
-        let storage = &mut *storage;
-        let mut cache = storage.cache.borrow_mut();
-
-        let mut other_storage = other.storage_cache_dword.lock();
-        let other_cache = other_storage.cache.clone();
-
-        for (k, v) in other_cache.into_inner() {
-            cache.insert(k.clone(), v.clone()); //TODO: cloning should not be required here
-        }
-        self.storage_changes_dword = other.storage_changes_dword;
-    }
-}
-
-impl From<BasicAccount> for FVMAccount {
-    fn from(basic: BasicAccount) -> Self {
-        FVMAccount {
-            balance: basic.balance,
-            nonce: basic.nonce,
-            storage_root: basic.storage_root,
-            storage_cache: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes: HashMap::new(),
-            storage_cache_dword: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes_dword: HashMap::new(),
-            code_hash: basic.code_hash,
-            code_size: None,
-            code_cache: Arc::new(vec![]),
-            code_filth: Filth::Clean,
-            address_hash: Arc::new(Mutex::new(Cell::new(None))),
-            empty_but_commit: false,
-        }
     }
 }
 
 impl From<BasicAccount> for AVMAccount {
     fn from(basic: BasicAccount) -> Self {
-        AVMAccount {
+        Account {
             balance: basic.balance,
             nonce: basic.nonce,
             storage_root: basic.storage_root,
-            storage_cache:  Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes: HashMap::new(),
+            storage_cache: Self::empty_storage_cache(),
+            storage_changes: Self::empty_storage_change(),
             code_hash: basic.code_hash,
             code_size: None,
             code_cache: Arc::new(vec![]),
             code_filth: Filth::Clean,
-            address_hash: Arc::new(Mutex::new(Cell::new(None))),
+            address_hash: Cell::new(None),
+            empty_but_commit: false,
         }
     }
 }
 
-impl AccountOps for AVMAccount {
-     /// Replace self with the data from other account merging storage cache.
-    /// Basic account data and all modifications are overwritten
-    /// with new values.
-    fn overwrite_with(&mut self, other: Self) {
-        self.balance = other.balance;
-        self.nonce = other.nonce;
-        self.storage_root = other.storage_root;
-        self.code_hash = other.code_hash;
-        self.code_filth = other.code_filth;
-        self.code_cache = other.code_cache;
-        self.code_size = other.code_size;
-        self.address_hash = other.address_hash;
-
-        let mut storage = self.storage_cache.lock();
-        let storage = &mut *storage;
-        let mut cache = storage.cache.borrow_mut();
-
-        let other_storage = other.storage_cache.lock();
-        let other_cache = other_storage.cache.clone();
-
-        for (k, v) in other_cache.into_inner() {
-            cache.insert(k.clone(), v.clone()); //TODO: cloning should not be required here
-        }
-        self.storage_changes = other.storage_changes;
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct AVMAccount {
-    // Balance of the account.
-    balance: U256,
-    // Nonce of the account.
-    nonce: U256,
-    // Trie-backed storage.
-    storage_root: H256,
-    // LRU Cache of the trie-backed storage.
-    // This is limited to `STORAGE_CACHE_ITEMS` recent queries
-    storage_cache: Arc<Mutex<StorageCache<Bytes, Bytes>>>,
-    // Modified storage. Accumulates changes to storage made in `set_storage`
-    // Takes precedence over `storage_cache`.
-    storage_changes: HashMap<Bytes, Bytes>,
-
-    // Code hash of the account.
-    code_hash: H256,
-    // Size of the accoun code.
-    code_size: Option<usize>,
-    // Code cache of the account.
-    code_cache: Arc<Bytes>,
-    // Account code new or has been modified.
-    code_filth: Filth,
-    // Cached address hash.
-    address_hash: Arc<Mutex<Cell<Option<H256>>>>,
-}
+type AVMCache = RefCell<LruCache<Bytes, Bytes>>;
+type AVMStorageChange = HashMap<Bytes, Bytes>;
+pub type AVMAccount = Account<AVMCache, AVMStorageChange>;
 
 impl AVMAccount {
+    fn empty_storage_cache() -> AVMCache {
+        RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS))
+    }
+
+    fn empty_storage_change() -> AVMStorageChange {
+        HashMap::new()
+    }
+
     fn new_basic(balance: U256, nonce: U256) -> Self {
         Self {
             balance: balance,
             nonce: nonce,
             storage_root: BLAKE2B_NULL_RLP,
-            storage_cache: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
+            storage_cache: Self::empty_storage_cache(),
             storage_changes: HashMap::new(),
             code_hash: BLAKE2B_EMPTY,
             code_cache: Arc::new(vec![]),
             code_size: Some(0),
             code_filth: Filth::Clean,
-            address_hash: Arc::new(Mutex::new(Cell::new(None))),
+            address_hash: Cell::new(None),
+            empty_but_commit: false,
         }
     }
 
@@ -373,15 +267,14 @@ impl AVMAccount {
             balance: self.balance.clone(),
             nonce: self.nonce.clone(),
             storage_root: self.storage_root.clone(),
-            storage_cache: Arc::new(Mutex::new(StorageCache {
-                cache: RefCell::new(LruCache::new(STORAGE_CACHE_ITEMS)),
-            })),
-            storage_changes: HashMap::new(),
+            storage_cache: Self::empty_storage_cache(),
+            storage_changes: Self::empty_storage_change(),
             code_hash: self.code_hash.clone(),
             code_size: self.code_size.clone(),
             code_cache: self.code_cache.clone(),
             code_filth: self.code_filth,
             address_hash: self.address_hash.clone(),
+            empty_but_commit: self.empty_but_commit,
         }
     }
 
@@ -393,8 +286,6 @@ impl AVMAccount {
     ) -> trie::Result<()>
     {
         let mut t = trie_factory.from_existing(db, &mut self.storage_root)?;
-        let mut storage = self.storage_cache.lock();
-        let storage = &mut *storage;
         for (k, v) in self.storage_changes.drain() {
             // cast key and value to trait type,
             // so we can call overloaded `to_bytes` method
@@ -410,7 +301,7 @@ impl AVMAccount {
                 false => t.insert(&k, &encode(&v))?,
             };
 
-            storage.cache.borrow_mut().insert(k, v);
+            self.storage_cache.borrow_mut().insert(k, v);
         }
 
         Ok(())
@@ -419,7 +310,7 @@ impl AVMAccount {
 
 macro_rules! impl_account {
     ($T: ty, $fixed_strg: expr) => {
-        impl Account for $T {
+        impl CommonAccount for $T {
             fn from_rlp(rlp: &[u8]) -> $T {
                 let basic: BasicAccount = ::rlp::decode(rlp);
                 basic.into()
@@ -443,10 +334,10 @@ macro_rules! impl_account {
             fn code_hash(&self) -> H256 {self.code_hash.clone()}
 
             fn address_hash(&self, address: &Address) -> H256 {
-                let hash = self.address_hash.lock().get();
+                let hash = self.address_hash.get();
                 hash.unwrap_or_else(|| {
                     let hash = blake2b(address);
-                    self.address_hash.lock().set(Some(hash.clone()));
+                    self.address_hash.set(Some(hash.clone()));
                     hash
                 })
             }
@@ -617,79 +508,91 @@ macro_rules! impl_account {
 impl_account!(FVMAccount, true);
 impl_account!(AVMAccount, false);
 
-impl AccountStorage<H128, H128> for FVMAccount {
-    fn storage_at(&self, db: &HashStore, key: &H128) -> trie::Result<H128> {
+#[derive(Debug)]
+enum FVMKey {
+    Normal(H128),
+    Wide(H128),
+}
+
+#[derive(Debug, PartialEq)]
+enum FVMValue {
+    Normal(H128),
+    Long(H256),
+}
+
+impl FVMAccount {
+    fn storage_at(&self, db: &HashStore, key: &FVMKey) -> trie::Result<FVMValue> {
         if let Some(value) = self.cached_storage_at(key) {
             return Ok(value);
         }
         let db = SecTrieDB::new(db, &self.storage_root)?;
 
-        let item: U128 = db.get_with(key, ::rlp::decode)?.unwrap_or_else(U128::zero);
-        let value: H128 = item.into();
-        let mut storage = self.storage_cache.lock();
-        let storage = &mut *storage;
-        storage.cache
-            .borrow_mut()
-            .insert(key.clone(), value.clone());
-        Ok(value)
+        match key {
+            FVMKey::Normal(key) => {
+                let item: U128 = db.get_with(key, ::rlp::decode)?.unwrap_or_else(U128::zero);
+                let value: H128 = item.into();
+                self.storage_cache
+                    .0
+                    .borrow_mut()
+                    .insert(key.clone(), value.clone());
+                Ok(FVMValue::Normal(value))
+            },
+            FVMKey::Wide(key) => {
+                let item: U256 = db.get_with(key, ::rlp::decode)?.unwrap_or_else(U256::zero);
+                let value: H256 = item.into();
+                self.storage_cache
+                    .1
+                    .borrow_mut()
+                    .insert(key.clone(), value.clone());
+                Ok(FVMValue::Long(value))
+            },
+        }
     }
 
-    fn cached_storage_at(&self, key: &H128) -> Option<H128> {
-        if let Some(value) = self.storage_changes.get(key) {
-            return Some(value.clone());
+    fn cached_storage_at(&self, key: &FVMKey) -> Option<FVMValue> {
+        match key {
+            FVMKey::Normal(key) => {
+                if let Some(value) = self.storage_changes.0.get(key) {
+                    return Some(FVMValue::Normal(value.clone()));
+                }
+                if let Some(value) = self.storage_cache.0.borrow_mut().get_mut(key) {
+                    return Some(FVMValue::Normal(value.clone()));
+                }
+                None
+            },
+            FVMKey::Wide(key) => {
+                if let Some(value) = self.storage_changes.1.get(key) {
+                    return Some(FVMValue::Long(value.clone()));
+                }
+                if let Some(value) = self.storage_cache.1.borrow_mut().get_mut(key) {
+                    return Some(FVMValue::Long(value.clone()));
+                }
+                None
+            },
         }
-
-        let mut storage = self.storage_cache.lock();
-        let storage = &mut *storage;
-
-        if let Some(value) = storage.cache.borrow_mut().get_mut(key) {
-            return Some(value.clone());
-        }
-        None
     }
 
-    fn set_storage(&mut self, key: H128, value: H128) {
-        self.storage_changes.insert(key, value);
+    fn set_storage(&mut self, key: FVMKey, value: FVMValue) {
+        match key {
+            FVMKey::Normal(key) => {
+                if let FVMValue::Normal(value) = value {
+                    self.storage_changes.0.insert(key, value);
+                } else {
+                    panic!("unexpected key/value pair: maybe the value is too long");
+                }
+            },
+            FVMKey::Wide(key) => {
+                if let FVMValue::Long(value) = value {
+                    self.storage_changes.1.insert(key, value);
+                } else {
+                    panic!("unexpected key/value pair: maybe the value is too short");
+                }
+            },
+        }
     }
 }
 
-impl AccountStorage<H128, H256> for FVMAccount {
-    fn storage_at(&self, db: &HashStore, key: &H128) -> trie::Result<H256> {
-        if let Some(value) = self.cached_storage_at(key) {
-            return Ok(value);
-        }
-        let db = SecTrieDB::new(db, &self.storage_root)?;
-
-        let item: U256 = db.get_with(key, ::rlp::decode)?.unwrap_or_else(U256::zero);
-        let value: H256 = item.into();
-        let mut storage = self.storage_cache_dword.lock();
-        let storage = &mut *storage;
-        storage.cache
-            .borrow_mut()
-            .insert(key.clone(), value.clone());
-        Ok(value)
-    }
-
-    fn cached_storage_at(&self, key: &H128) -> Option<H256> {
-        if let Some(value) = self.storage_changes_dword.get(key) {
-            return Some(value.clone());
-        }
-
-        let mut storage = self.storage_cache_dword.lock();
-        let storage = &mut *storage;
-
-        if let Some(value) = storage.cache.borrow_mut().get_mut(key) {
-            return Some(value.clone());
-        }
-        None
-    }
-
-    fn set_storage(&mut self, key: H128, value: H256) {
-        self.storage_changes_dword.insert(key, value);
-    }
-}
-
-impl AccountStorage<Bytes, Bytes> for AVMAccount {
+impl AVMAccount {
     fn storage_at(&self, db: &HashStore, key: &Bytes) -> trie::Result<Bytes> {
         println!("get storage: key = {:?}", key);
         if let Some(value) = self.cached_storage_at(key) {
@@ -698,9 +601,7 @@ impl AccountStorage<Bytes, Bytes> for AVMAccount {
         let db = SecTrieDB::new(db, &self.storage_root)?;
 
         let value: Vec<u8> = db.get_with(key, ::rlp::decode)?.unwrap_or_else(|| vec![]);
-        let mut storage = self.storage_cache.lock();
-        let storage = &mut *storage;
-        storage.cache
+        self.storage_cache
             .borrow_mut()
             .insert(key.clone(), value.clone());
         println!("get storage value from db: key = {:?}, value = {:?}", key, value);
@@ -713,10 +614,7 @@ impl AccountStorage<Bytes, Bytes> for AVMAccount {
             return Some(value.clone());
         }
 
-        let mut storage = self.storage_cache.lock();
-        let storage = &mut *storage;
-
-        if let Some(value) = storage.cache.borrow_mut().get_mut(key) {
+        if let Some(value) = self.storage_cache.borrow_mut().get_mut(key) {
             return Some(value.clone());
         }
         None
@@ -743,7 +641,7 @@ mod tests {
         let mut db = AccountDBMut::new(&mut db, &Address::new());
         let rlp = {
             let mut a = FVMAccount::new_contract(69.into(), 0.into());
-            a.set_storage(H128::from(0x00u64), H128::from(0x1234u64));
+            a.set_storage(FVMKey::Normal(H128::from(0x00u64)), FVMValue::Normal(H128::from(0x1234u64)));
             a.commit_storage(&Default::default(), &mut db).unwrap();
             a.init_code(vec![]);
             a.commit_code(&mut db);
@@ -755,15 +653,18 @@ mod tests {
             *a.storage_root().unwrap(),
             "d2e59a50e7414e56da75917275d1542a13fd345bf88a657a4222a0d50ad58868".into()
         );
-        let value: H128 = a.storage_at(&db.immutable(), &H128::from(0x00u64)).unwrap();
+        let value = a.storage_at(&db.immutable(), &FVMKey::Normal(H128::from(0x00u64))).unwrap();
         assert_eq!(
             value,
-            0x1234u64.into()
+            FVMValue::Normal(0x1234u64.into())
         );
-        let value: H128 = a.storage_at(&db.immutable(), &0x01u64.into()).unwrap();
+        let value = a.storage_at(&db.immutable(), &FVMKey::Normal(0x01u64.into())).unwrap();
         assert_eq!(
             value,
-            H128::default()
+            FVMValue::Normal(H128::default())
         );
     }
 }
+
+unsafe impl Sync for FVMAccount {}
+unsafe impl Sync for AVMAccount {}

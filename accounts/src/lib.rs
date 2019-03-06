@@ -14,8 +14,10 @@ extern crate db as kvdb;
 extern crate patricia_trie as trie;
 extern crate parking_lot;
 
+//mod accounts;
+mod generic;
 mod accounts;
 mod traits;
 mod account_db;
 
-pub use accounts::{Account, FVMAccount, AVMAccount};
+pub use accounts::{FVMAccount, AVMAccount};
