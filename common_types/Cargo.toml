@@ -1,0 +1,18 @@
+[package]
+name = "common-types"
+description = "Common types used throughout the codebase"
+version = "0.1.0"
+authors = ["Aion Foundation <admin@aion.network>"]
+
+[dependencies]
+rlp = { path = "../rlp" }
+rlp_derive = { path = "../rlp_derive" }
+acore-bytes = { path = "../bytes" }
+aion-types = { path = "../aion-types"}
+ethbloom = { path = "../ethbloom"}
+ajson = { path = "../json" }
+blake2b = { path = "..//blake2b" }
+heapsize = "0.4"
+
+[dev-dependencies]
+rustc-hex= "1.0"
