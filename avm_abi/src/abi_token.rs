@@ -64,6 +64,8 @@ pub enum AbiToken<'a> {
     AFLOAT(&'a [f32]),
     ADOUBLE(&'a [f64]),
     STRING(String),
+    METHOD(String),
+    ADDRESS([u8; 32]),
 }
 
 pub trait AVMEncoder {
@@ -167,6 +169,16 @@ impl<'a> AVMEncoder for AbiToken<'a> {
                 res.append(&mut (v.len() as i16).to_vm_bytes());
                 res.append(&mut v.clone().into_bytes());
             },
+            AbiToken::METHOD(ref s) => {
+                res.push(0x21);
+                res.push(0x00);
+                res.push(0x0B);
+                res.append(&mut s.clone().into_bytes());
+            }
+            AbiToken::ADDRESS(addr) => {
+                res.push(0x22);
+                res.extend(addr.iter());
+            }
         }
 
         res
@@ -179,10 +191,10 @@ mod tests {
 
     #[test]
     fn encode() {
-        let mut method = AbiToken::STRING("hello".to_string());
+        let mut method = AbiToken::METHOD("sayHello".to_string());
         let mut data_0 = AbiToken::UCHAR(0x01u8);
 
-        assert_eq!(method.encode(), vec![0x21, 0x00, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f]);
+        assert_eq!(method.encode(), vec![0x21, 0x00, 0x0B, 0x73, 0x61, 0x79, 0x48, 0x65, 0x6c, 0x6c, 0x6f]);
         assert_eq!(data_0.encode(), vec![0x01, 0x01]);
         data_0 = AbiToken::UCHAR(0xff);
         assert_eq!(data_0.encode(), vec![0x01, 0xff]);

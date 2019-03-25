@@ -6,16 +6,16 @@ description = "A `HashDB` which can manage a short-term journal potentially cont
 license = "GPL3"
 
 [dependencies]
-acore-bytes = { path = "../../util/bytes" }
-aion-types = { path = "../../util/aion-types"}
+acore-bytes = { path = "../../bytes" }
+aion-types = { path = "../../aion-types"}
 heapsize = "0.4"
 db = { path = "../core" }
 log = "0.3"
 parking_lot = "0.5"
-plain_hasher = { path = "../../util/plain_hasher" }
-rlp = { path = "../../util/rlp" }
-util-error = { path = "../../util/error" }
+plain_hasher = { path = "../../plain_hasher" }
+rlp = { path = "../../rlp" }
+util-error = { path = "../../error" }
 
 [dev-dependencies]
-logger = { path = "../../util/logger" }
-blake2b = { path = "../../util/blake2b" }
+logger = { path = "../../logger" }
+blake2b = { path = "../../blake2b" }

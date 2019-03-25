@@ -3,4 +3,6 @@ members = [
     "accounts",
     "avm_abi",
     "terminal",
+    "json",
+    "db/journaldb",
 ]
