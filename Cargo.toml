@@ -3,4 +3,5 @@ members = [
     "accounts",
     "avm_abi",
     "terminal",
+    "json",
 ]
